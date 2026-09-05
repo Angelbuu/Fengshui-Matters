@@ -3,3 +3,5 @@ langchain-groq
 langgraph
 boto3  
 python-dotenv
+pydantic
+pytest
