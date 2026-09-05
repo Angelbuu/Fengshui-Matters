@@ -1,38 +1,101 @@
+"""Simulation adapter for fake tests and the real OrcaLab backend."""
+
 import time
+
 from src.control.adapters.base_adapter import BaseAdapter
-from src.navigation.schemas import RobotCommand, SimulatorObservation, Pose, Velocity
+from src.navigation.schemas import (
+    Pose,
+    RobotCommand,
+    SimulatorObservation,
+    Velocity,
+)
+
 
 class SimAdapter(BaseAdapter):
+    """Navigation-to-simulation adapter.
+
+    ``mode="fake"`` preserves the lightweight test behaviour and requires no
+    Orca dependencies.
+
+    ``mode="orca"`` connects Navigation Control to the real OrcaLab backend.
     """
-    A temporary fake delivery driver (adapter). 
-    Pretend to send commands and return fake safe data!
-    """
-    
-    def __init__(self):
-        # We will just store the last command in memory so we can check it in tests
+
+    def __init__(self, mode: str = "fake"):
+        if mode not in {"fake", "orca"}:
+            raise ValueError("mode must be 'fake' or 'orca'")
+
+        self.mode = mode
         self.last_command_received = None
-        
+        self._orca = None
+
+        if mode == "orca":
+            # Lazy import keeps normal tests independent of OrcaLab/NaVILA.
+            from src.control.adapters.orca_simulation import OrcaSimulation
+
+            self._orca = OrcaSimulation()
+
     def send_command(self, command: RobotCommand) -> bool:
-        # Step 1: Pretend we sent it over a network
         self.last_command_received = command
-        print(f"[SimAdapter] Sent command to simulator: {command.action} for {command.duration_s} seconds")
-        return True
-        
+
+        if self.mode == "fake":
+            print(
+                f"[SimAdapter] Sent command to simulator: "
+                f"{command.action} for {command.duration_s} seconds"
+            )
+            return True
+
+        assert self._orca is not None
+        return self._orca.execute_command(command)
+
     def get_observation(self) -> SimulatorObservation:
-        # Step 2: Pretend the robot is sitting perfectly still at the start (0,0)
-        fake_pose = Pose(x_m=0.0, y_m=0.0, yaw_rad=0.0)
-        fake_velocity = Velocity(vx_mps=0.0, vy_mps=0.0, wz_rps=0.0)
-        
-        # Step 3: Box it up into the exact structured object we promised
-        observation = SimulatorObservation(
-            run_id="fake_run",
-            command_id="fake_cmd",
+        if self.mode == "fake":
+            return SimulatorObservation(
+                run_id="fake_run",
+                command_id="fake_cmd",
+                timestamp_ms=int(time.time() * 1000),
+                sim_time_s=0.0,
+                robot_status="RUNNING",
+                pose=Pose(
+                    x_m=0.0,
+                    y_m=0.0,
+                    yaw_rad=0.0,
+                ),
+                velocity=Velocity(
+                    vx_mps=0.0,
+                    vy_mps=0.0,
+                    wz_rps=0.0,
+                ),
+                heading_error_rad=0.0,
+                obstacles=[],
+            )
+
+        assert self._orca is not None
+
+        # Refresh all simulator-side observations.
+        pose = self._orca.get_robot_pose()
+        obstacles = self._orca.get_lidar_obstacles()
+        camera_frame = self._orca.get_camera_frame()
+
+        state = self._orca.get_state()
+
+        return SimulatorObservation(
+            run_id=state.run_id,
+            command_id=state.command_id,
             timestamp_ms=int(time.time() * 1000),
-            sim_time_s=0.0,
-            robot_status="RUNNING",
-            pose=fake_pose,
-            velocity=fake_velocity,
-            heading_error_rad=0.0,
-            obstacles=[] # The path is completely clear in our fake world
+            sim_time_s=state.sim_time_s,
+            robot_status=state.robot_status,
+            pose=pose,
+            velocity=state.velocity,
+            current_waypoint=state.current_waypoint,
+            target_waypoint=state.target_waypoint,
+            distance_to_target_m=state.distance_to_target_m,
+            heading_error_rad=state.heading_error_rad,
+            camera_frame=camera_frame,
+            obstacles=obstacles,
         )
-        return observation
+
+    def close(self) -> None:
+        """Release Orca resources when running in real simulation mode."""
+        if self._orca is not None:
+            self._orca.close()
+            self._orca = None
