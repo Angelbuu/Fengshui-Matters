@@ -1,4 +1,7 @@
 import uuid
+from control.safety_supervisor import SafetySupervisor
+from navigation.route_evaluator import RouteEvaluator
+from navigation.route_planner import LOCATIONS
 from llm_agent_destination import (
     DestinationDecision,
     Intent,
@@ -310,3 +313,50 @@ def request_replan(
         return state
 
     return assign_route(state, route)
+
+def execute_navigation(state: AgentState, adapter) -> AgentState:
+    """
+    Executes one step of the navigation loop for LangGraph.
+    """
+    safety_gate = SafetySupervisor()
+    evaluator = RouteEvaluator()
+    
+    action = decide_next_action(state)
+    
+    if action == "NAVIGATE_TO_DESTINATION":
+        print(f"\n[Agent B] Requesting route to {state.destination}...")
+        state = request_initial_route(state, "lobby")
+        
+    elif action == "SEND_NEXT_WAYPOINT":
+        is_valid, agent_cmd = create_next_waypoint_command(state)
+        if not is_valid:
+            state.status = "ERROR"
+            return state
+            
+        print(f"\n[Navigation] Targeting waypoint: {agent_cmd.waypoint_id}")
+        
+        obs = adapter.get_observation()
+        robot_cmd = safety_gate.evaluate_command(agent_cmd, obs)
+        adapter.send_command(robot_cmd)
+        
+        # Fake physics
+        target_wp = LOCATIONS[agent_cmd.waypoint_id]
+        adapter._fake_x_m = target_wp.x_m
+        adapter._fake_y_m = target_wp.y_m
+        
+        updated_obs = adapter.get_observation()
+        updated_obs.distance_to_target_m = 0.1
+        updated_obs.current_waypoint = agent_cmd.waypoint_id
+        
+        was_stopped = (robot_cmd.action == "STOP")
+        feedback = evaluator.evaluate_progress(agent_cmd, updated_obs, was_stopped_by_safety=was_stopped)
+        
+        state = handle_navigation_feedback(state, feedback)
+        
+    elif action == "REQUEST_REPLAN":
+        print("\n[Agent B] State transitioned to BLOCKED, replanning...")
+        # For MVP, we assume the path is completely blocked
+        state.status = "NO_ROUTE_AVAILABLE"
+        state.human_assistance_required = True
+        
+    return state
