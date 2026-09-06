@@ -359,15 +359,19 @@ def build_occupancy_map(
         ]
 
         # ----------------------------------------------------
-        # Generate a conservative 2-D bounding box.
+        # ----------------------------------------------------
+        # Rasterize the actual oriented obstacle footprint.
         #
-        # For an oriented box with local half-extents hx/hy:
+        # Previously we filled the entire axis-aligned bounding
+        # box of a rotated partition. That greatly overestimated
+        # angled walls and could close visually open corridors.
         #
-        # world half-width =
-        # |R00|hx + |R01|hy
-        #
-        # world half-height =
-        # |R10|hx + |R11|hy
+        # Here we:
+        #   1. find a conservative search box,
+        #   2. transform each candidate grid cell into the geom's
+        #      local XY frame,
+        #   3. block only cells inside the real oriented footprint
+        #      plus Go2 clearance.
         # ----------------------------------------------------
 
         if geom_type == "box":
@@ -375,14 +379,17 @@ def build_occupancy_map(
             hx = float(size[0])
             hy = float(size[1])
 
-            world_hx = (
+            # Conservative world-space search bounds only.
+            search_hx = (
                 abs(rotation[0, 0]) * hx
                 + abs(rotation[0, 1]) * hy
+                + ROBOT_CLEARANCE_M
             )
 
-            world_hy = (
+            search_hy = (
                 abs(rotation[1, 0]) * hx
                 + abs(rotation[1, 1]) * hy
+                + ROBOT_CLEARANCE_M
             )
 
         elif geom_type in {
@@ -390,21 +397,22 @@ def build_occupancy_map(
             "sphere",
         }:
 
-            world_hx = float(size[0])
-            world_hy = float(size[0])
+            radius = (
+                float(size[0])
+                + ROBOT_CLEARANCE_M
+            )
+
+            search_hx = radius
+            search_hy = radius
 
         else:
             continue
 
-        # Inflate by robot footprint.
-        world_hx += ROBOT_CLEARANCE_M
-        world_hy += ROBOT_CLEARANCE_M
+        x0 = cx - search_hx
+        x1 = cx + search_hx
 
-        x0 = cx - world_hx
-        x1 = cx + world_hx
-
-        y0 = cy - world_hy
-        y1 = cy + world_hy
+        y0 = cy - search_hy
+        y1 = cy + search_hy
 
         col0 = max(
             0,
@@ -446,10 +454,67 @@ def build_occupancy_map(
             ),
         )
 
-        grid[
-            row0:row1 + 1,
-            col0:col1 + 1,
-        ] = 1
+        # Rotation columns are the geom's local axes expressed
+        # in world coordinates.
+        axis_x_x = float(rotation[0, 0])
+        axis_x_y = float(rotation[1, 0])
+
+        axis_y_x = float(rotation[0, 1])
+        axis_y_y = float(rotation[1, 1])
+
+        for row in range(
+            row0,
+            row1 + 1,
+        ):
+            for col in range(
+                col0,
+                col1 + 1,
+            ):
+
+                wx = (
+                    MAP_X_MIN
+                    + col * GRID_RESOLUTION_M
+                )
+
+                wy = (
+                    MAP_Y_MIN
+                    + row * GRID_RESOLUTION_M
+                )
+
+                dx = wx - cx
+                dy = wy - cy
+
+                if geom_type == "box":
+
+                    # World displacement -> geom-local XY.
+                    local_x = (
+                        dx * axis_x_x
+                        + dy * axis_x_y
+                    )
+
+                    local_y = (
+                        dx * axis_y_x
+                        + dy * axis_y_y
+                    )
+
+                    blocked = (
+                        abs(local_x)
+                        <= hx + ROBOT_CLEARANCE_M
+                        and
+                        abs(local_y)
+                        <= hy + ROBOT_CLEARANCE_M
+                    )
+
+                else:
+
+                    # Circular obstacle footprint.
+                    blocked = (
+                        dx * dx + dy * dy
+                        <= radius * radius
+                    )
+
+                if blocked:
+                    grid[row, col] = 1
 
     print(
         f"[OrcaMap] blocked geoms: "

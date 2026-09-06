@@ -335,13 +335,18 @@ class OrcaSimulation:
             # that overlap the physical width of the Go2 count
             # as front obstacles.
             if (
-                relative_x > 0.0
-                and abs(relative_y) <= 0.45
+                relative_x > 0.05
+                and abs(relative_y) <= 0.20
             ):
-                result["front"] = min(
-                    result["front"],
-                    relative_x,
-                )
+                if relative_x < result["front"]:
+                    result["front"] = relative_x
+                    result["front_debug"] = {
+                        "relative_x": relative_x,
+                        "relative_y": relative_y,
+                        "world_x": float(point[0]),
+                        "world_y": float(point[1]),
+                        "range": d,
+                    }
 
             # Directional sectors for choosing the clearer side.
             if 10.0 < angle <= 55.0:

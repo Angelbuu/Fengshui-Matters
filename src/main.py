@@ -1,118 +1,212 @@
+import os
+from pathlib import Path
+import subprocess
+import sys
 import traceback
 
 from src.llm_agent_destination import build_resolver
-from src.agent import (
-    handle_destination_decision,
-    decide_next_action,
-    request_initial_route,
-    create_next_waypoint_command,
-    handle_navigation_feedback,
-)
-from src.control.safety_supervisor import SafetySupervisor
-from src.navigation.route_evaluator import RouteEvaluator
-from src.control.adapters.sim_adapter import SimAdapter
-from src.navigation.route_planner import LOCATIONS
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ASTAR_RUNNER = PROJECT_ROOT / "run_orca_astar.py"
+
+
+def run_real_orca_navigation(destination: str) -> bool:
+    """
+    Launch the tested Orca A* physical-navigation layer.
+
+    The destination has already been resolved by Agent A.
+    """
+
+    print()
+    print("=" * 60)
+    print("STARTING PHYSICAL ORCA NAVIGATION")
+    print(f"Destination: {destination}")
+    print("=" * 60)
+    print()
+
+    command = [
+        sys.executable,
+        str(ASTAR_RUNNER),
+        destination,
+        "--max-decisions",
+        "300",
+    ]
+
+    result = subprocess.run(
+        command,
+        cwd=str(PROJECT_ROOT),
+        env=os.environ.copy(),
+    )
+
+    return result.returncode == 0
+
 
 def run_hospital_robot():
+    print()
     print("========================================")
-    print(" FENGSHUI-MATTERS: FULL SYSTEM ONLINE")
-    print("========================================\n")
-    
-    print("[Boot] Initializing LLM Resolver (Groq)...")
+    print(" FENGSHUI-MATTERS: HOSPITAL GUIDE")
+    print("========================================")
+    print()
+
+    # --------------------------------------------------------
+    # Initialize teammate's LLM destination resolver
+    # --------------------------------------------------------
+
+    print("[Boot] Initializing destination resolver...")
+
     resolver = build_resolver()
-    
-    print("[Boot] Initializing Navigation & Simulator...")
-    adapter = SimAdapter(mode="fake")
-    safety_gate = SafetySupervisor()
-    evaluator = RouteEvaluator()
-    
-    print("\n========================================")
-    print("Robot is ready in the lobby.")
-    user_input = input("Visitor instruction: ")
-    print("========================================\n")
-    
-    # 1. LLM understands intent
-    print(f"[Agent A] Analyzing: '{user_input}'")
-    decision = resolver.resolve_destination(user_input)
-    print(f"[Agent A] Output: Intent={decision.intent.name}, Destination={decision.destination}")
-    
+
+    print("[Boot] LLM ready.")
+    print("[Boot] Orca navigation will start after a destination is confirmed.")
+
+    print()
+    print("Robot is ready.")
+    print()
+
+    # --------------------------------------------------------
+    # Initial visitor request
+    # --------------------------------------------------------
+
+    user_input = input(
+        "Visitor instruction: "
+    ).strip()
+
+    if not user_input:
+        print("No instruction received.")
+        return
+
+    print()
+    print(
+        f"[Agent A] Analyzing: "
+        f"'{user_input}'"
+    )
+
+    decision = resolver.resolve_destination(
+        user_input
+    )
+
+    print(
+        f"[Agent A] Intent="
+        f"{decision.intent.name}, "
+        f"Destination="
+        f"{decision.destination}"
+    )
+
+    # --------------------------------------------------------
+    # Clarification loop from teammate's implementation
+    # --------------------------------------------------------
+
     clarification_rounds = 0
-    
+
     while decision.intent.name != "NAVIGATE":
+
         if clarification_rounds >= 5:
-            print("\n[Robot says]: (System) Maximum clarification rounds reached. Resetting.")
+            print()
+            print(
+                "[Robot]: I still don't have enough "
+                "information to determine where you need to go."
+            )
             return
-            
-        print(f"\n[Robot says]: {decision.visitor_message}")
-        
+
+        print()
+        print(
+            f"[Robot]: "
+            f"{decision.visitor_message}"
+        )
+
         if decision.intent.name == "UNKNOWN":
-            print("Ending conversation.")
             return
-            
-        user_input = input("\nVisitor response: ")
-        print(f"\n[Agent A] Analyzing: '{user_input}'")
-        decision = resolver.resolve_destination(user_input)
-        print(f"[Agent A] Output: Intent={decision.intent.name}, Destination={decision.destination}")
-        
+
+        user_input = input(
+            "Visitor response: "
+        ).strip()
+
+        if not user_input:
+            print(
+                "[Robot]: I didn't receive a response."
+            )
+            return
+
+        print()
+        print(
+            f"[Agent A] Analyzing: "
+            f"'{user_input}'"
+        )
+
+        decision = resolver.resolve_destination(
+            user_input
+        )
+
+        print(
+            f"[Agent A] Intent="
+            f"{decision.intent.name}, "
+            f"Destination="
+            f"{decision.destination}"
+        )
+
         clarification_rounds += 1
-        
-    # 2. Start Agent B state machine
-    state = handle_destination_decision(decision)
-    
-    # 3. The Master Loop
-    while True:
-        action = decide_next_action(state)
-        
-        if action == "NAVIGATE_TO_DESTINATION":
-            print(f"\n[Agent B] Requesting route to {state.destination}...")
-            state = request_initial_route(state, "lobby")
-            print(f"[Agent B] Route planned: {state.current_route}")
-            
-        elif action == "SEND_NEXT_WAYPOINT":
-            is_valid, agent_cmd = create_next_waypoint_command(state)
-            if not is_valid:
-                print(f"[Validator] ERROR: {agent_cmd}")
-                break
-                
-            print(f"\n[Navigation] Targeting waypoint: {agent_cmd.waypoint_id}")
-            
-            # Fetch observation and check safety
-            obs = adapter.get_observation()
-            robot_cmd = safety_gate.evaluate_command(agent_cmd, obs)
-            
-            # Send safe command to motors
-            adapter.send_command(robot_cmd)
-            
-            # --- MOCK PHYSICS FOR MVP HACKATHON ---
-            # Because our prototype fake physics doesn't steer, we just teleport 
-            # the fake robot to the waypoint to prove the software pipeline works.
-            target_wp = LOCATIONS[agent_cmd.waypoint_id]
-            adapter._fake_x_m = target_wp.x_m
-            adapter._fake_y_m = target_wp.y_m
-            
-            # Check progress
-            updated_obs = adapter.get_observation()
-            updated_obs.distance_to_target_m = 0.1 # Successfully arrived!
-            updated_obs.current_waypoint = agent_cmd.waypoint_id
-            
-            was_stopped = (robot_cmd.action == "STOP")
-            feedback = evaluator.evaluate_progress(agent_cmd, updated_obs, was_stopped_by_safety=was_stopped)
-            
-            print(f"[Evaluator] Status: {feedback.status}")
-            state = handle_navigation_feedback(state, feedback)
-            
-        elif action == "ARRIVED":
-            print("\n========================================")
-            print("[Robot says]: We have arrived at your destination! Have a great day.")
-            print("========================================")
-            break
-            
-        else:
-            print(f"\n[Agent B] Halting due to status: {action}")
-            break
+
+    # --------------------------------------------------------
+    # Destination confirmed
+    # --------------------------------------------------------
+
+    destination = decision.destination
+
+    if destination is None:
+        print(
+            "[Robot]: I couldn't determine "
+            "a destination."
+        )
+        return
+
+    print()
+    print(
+        f"[Robot]: "
+        f"{decision.visitor_message}"
+    )
+
+    print()
+    print(
+        f"[System] Confirmed destination: "
+        f"{destination}"
+    )
+
+    # --------------------------------------------------------
+    # Hand destination to YOUR tested Orca A* layer
+    # --------------------------------------------------------
+
+    success = run_real_orca_navigation(
+        destination
+    )
+
+    print()
+
+    if success:
+        print("=" * 60)
+        print(
+            f"[Robot]: We have arrived at "
+            f"{destination.replace('_', ' ')}."
+        )
+        print("=" * 60)
+
+    else:
+        print("=" * 60)
+        print(
+            "[Robot]: I couldn't complete the route safely."
+        )
+        print("=" * 60)
+
 
 if __name__ == "__main__":
     try:
         run_hospital_robot()
-    except Exception as e:
+
+    except KeyboardInterrupt:
+        print()
+        print("[System] Navigation cancelled.")
+
+    except Exception:
+        print()
+        print("[System] Unexpected error:")
         traceback.print_exc()

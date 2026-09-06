@@ -140,7 +140,6 @@ def main():
         print()
 
         waypoint_index = 0
-        emergency_stops = 0
 
         for decision in range(
             args.max_decisions
@@ -205,55 +204,13 @@ def main():
             )
 
             # ----------------------------------------
-            # LiDAR emergency safety only
-            # ----------------------------------------
-
-            lidar = (
-                adapter._orca
-                .get_lidar_clearances()
-            )
-
-            front = lidar.get(
-                "front",
-                5.0,
-            )
-
-            # Orca can expose zero/near-zero LiDAR values for
-            # invalid or missing returns. Do not interpret those
-            # as a physical obstacle touching the robot.
-            if front <= 0.05:
-                front = 5.0
-
-            if front < EMERGENCY_STOP_M:
-
-                emergency_stops += 1
-
-                if emergency_stops >= 5:
-                    raise RuntimeError(
-                        "Persistent LiDAR obstacle on A* path."
-                    )
-
-                cmd = command(
-                    obs,
-                    "STOP",
-                    0.0,
-                    0.0,
-                    0.10,
-                    destination,
-                )
-
-                action = "EMERGENCY_STOP"
-
-            # ----------------------------------------
             # Turn toward A* waypoint
             # ----------------------------------------
 
-            elif (
+            if (
                 abs(heading_deg)
                 > HEADING_TOLERANCE_DEG
             ):
-
-                emergency_stops = 0
 
                 wz = (
                     TURN_SPEED_RPS
@@ -282,8 +239,6 @@ def main():
 
             else:
 
-                emergency_stops = 0
-
                 cmd = command(
                     obs,
                     "MOVE",
@@ -304,7 +259,7 @@ def main():
                 f"{target_y:.2f}) "
                 f"dist={distance:.2f} "
                 f"heading={heading_deg:.1f} "
-                f"front={front:.2f} "
+                
                 f"action={action}"
             )
 
