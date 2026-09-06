@@ -250,6 +250,62 @@ def main():
 
                 action = "MOVE"
 
+            # ----------------------------------------
+            # Generic runtime safety override
+            # ----------------------------------------
+            #
+            # A* controls global navigation. Simulator observations
+            # independently report collidable geometry around the
+            # robot. Any blocking obstacle inside the emergency
+            # distance overrides the navigation command with STOP.
+            #
+            # This logic is obstacle-agnostic: no wheelchair,
+            # destination, or obstacle coordinates are hard-coded.
+            blocking_obstacle = None
+
+            for obstacle in obs.obstacles:
+                if not (
+                    obstacle.get("blocking", False)
+                    or obstacle.get("is_blocking", False)
+                ):
+                    continue
+
+                if obstacle.get(
+                    "distance_m",
+                    float("inf"),
+                ) <= 0.50:
+                    blocking_obstacle = obstacle
+                    break
+
+            if (
+                blocking_obstacle is not None
+                and cmd.action == "MOVE"
+            ):
+                cmd = command(
+                    obs,
+                    "STOP",
+                    0.0,
+                    0.0,
+                    0.10,
+                    destination,
+                )
+
+                action = "SAFETY_STOP"
+
+                print()
+                print(
+                    "[Safety] DYNAMIC OBSTACLE DETECTED"
+                )
+                print(
+                    "[Safety] Emergency stop activated."
+                )
+                print(
+                    "[Safety] obstacle="
+                    f"{blocking_obstacle.get('name', 'unknown')} "
+                    "distance="
+                    f"{blocking_obstacle.get('distance_m', 0.0):.2f}m"
+                )
+
             print(
                 f"[{decision:03d}] "
                 f"wp={waypoint_index:02d} "

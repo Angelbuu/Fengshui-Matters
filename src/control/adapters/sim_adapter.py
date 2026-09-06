@@ -142,7 +142,9 @@ class SimAdapter(BaseAdapter):
 
         # Refresh all simulator-side observations.
         pose = self._orca.get_robot_pose()
-        obstacles = self._orca.get_lidar_obstacles()
+        # Generic simulator-side proximity observations.
+        # Safety logic remains independent of obstacle identity.
+        obstacles = self._orca.get_runtime_obstacles()
         # RGB is optional. Current Orca navigation is LiDAR-only.
         if getattr(self._orca, "camera_enabled", False):
             camera_frame = self._orca.get_camera_frame()

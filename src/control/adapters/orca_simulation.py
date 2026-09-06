@@ -112,6 +112,170 @@ class OrcaSimulation:
         self._np = np
         self._connected = True
 
+    def get_runtime_obstacles(
+        self,
+        *,
+        max_forward_m: float = 0.50,
+        half_width_m: float = 0.32,
+    ) -> list[dict[str, Any]]:
+        """Detect generic collidable MuJoCo geometry ahead of the Go2.
+
+        This is simulator-side proximity sensing for the safety layer.
+        It does not depend on obstacle names, destination names, or
+        hard-coded obstacle coordinates.
+        """
+        import math
+
+        self.connect()
+
+        pb2 = self._mjc_message_pb2
+
+        assert pb2 is not None
+        assert self._stub is not None
+
+        pose = self.get_robot_pose()
+
+        # Discover all collision geoms in the current runtime model.
+        all_geoms = self._stub.QueryAllGeoms(
+            pb2.QueryAllGeomsRequest(),
+            timeout=2.0,
+        )
+
+        candidates = []
+
+        for geom in all_geoms.geom_data_list:
+
+            name = geom.geom_name
+            body = geom.body_name
+
+            # Never detect the runtime Go2 as its own obstacle.
+            if (
+                body.startswith("go2_000")
+                or name.startswith("go2_000")
+            ):
+                continue
+
+            # Ignore visual-only/non-collidable geometry.
+            if (
+                int(geom.geom_contype) == 0
+                and int(geom.geom_conaffinity) == 0
+            ):
+                continue
+
+            # MuJoCo geom type 0 is a plane. Ground planes are
+            # intentionally collidable so the robot can stand on
+            # them, but they are not navigation obstacles.
+            if int(geom.geom_type) == 0:
+                continue
+
+            candidates.append(geom)
+
+        if not candidates:
+            self._state.obstacles = []
+            return []
+
+        names = [
+            geom.geom_name
+            for geom in candidates
+        ]
+
+        positions = self._stub.QueryGeomPosMat(
+            pb2.QueryGeomPosMatRequest(
+                geom_name_list=names,
+            ),
+            timeout=2.0,
+        )
+
+        position_by_name = {
+            item.geom_name: item
+            for item in positions.geom_pos_mat_list
+        }
+
+        c = math.cos(pose.yaw_rad)
+        s = math.sin(pose.yaw_rad)
+
+        obstacles = []
+
+        for geom in candidates:
+
+            current = position_by_name.get(
+                geom.geom_name
+            )
+
+            if current is None:
+                continue
+
+            wx = float(current.pos[0])
+            wy = float(current.pos[1])
+
+            dx = wx - pose.x_m
+            dy = wy - pose.y_m
+
+            # World -> robot coordinates.
+            forward = c * dx + s * dy
+            lateral = -s * dx + c * dy
+
+            size = list(geom.geom_size)
+
+            # Conservative XY radius around the geom centre.
+            #
+            # This works for boxes, cylinders and other common
+            # prototype obstacles without depending on their names.
+            radius = (
+                max(float(size[0]), float(size[1]))
+                if len(size) >= 2
+                else float(size[0])
+                if size
+                else 0.0
+            )
+
+            nearest_forward = forward - radius
+            lateral_clearance = (
+                abs(lateral) - radius
+            )
+
+            # Obstacle footprint overlaps the robot's forward
+            # collision corridor.
+            blocking = (
+                forward > 0.0
+                and nearest_forward
+                <= max_forward_m
+                and lateral_clearance
+                <= half_width_m
+            )
+
+            if not blocking:
+                continue
+
+            distance = max(
+                0.0,
+                math.hypot(forward, lateral)
+                - radius,
+            )
+
+            obstacles.append(
+                {
+                    "id": geom.geom_name,
+                    "name": geom.geom_name,
+                    "body": geom.body_name,
+                    "distance_m": distance,
+                    "relative_x_m": forward,
+                    "relative_y_m": lateral,
+                    "blocking": True,
+                    "is_blocking": True,
+                    "source": "mujoco_runtime",
+                }
+            )
+
+        obstacles.sort(
+            key=lambda item: item["distance_m"]
+        )
+
+        self._state.obstacles = obstacles
+
+        return obstacles
+
+
     def get_lidar_obstacles(
         self,
         *,
@@ -225,6 +389,141 @@ class OrcaSimulation:
 
         self._state.obstacles = [obstacle]
         return [obstacle]
+
+    def get_forward_danger_obstacle(
+        self,
+        *,
+        max_forward_m: float = 0.60,
+        half_width_m: float = 0.25,
+        min_height_m: float = 0.15,
+    ):
+        """
+        Return the nearest LiDAR point inside a narrow collision
+        corridor directly in front of the Go2.
+
+        Unlike get_lidar_obstacles(), this examines ALL valid
+        LiDAR returns instead of only the globally nearest surface.
+        """
+        import math
+
+        self.connect()
+
+        np = self._np
+        pb2 = self._mjc_message_pb2
+
+        assert np is not None
+        assert pb2 is not None
+        assert self._stub is not None
+
+        response = self._stub.QueryLiDARPointCloud(
+            pb2.LiDARPointCloudRequest(
+                entity_name=self.lidar_entity
+            ),
+            timeout=2.0,
+        )
+
+        if response.status != pb2.LiDARPointCloudResponse.SUCCESS:
+            return None
+
+        ranges = np.frombuffer(
+            response.range_data,
+            dtype=np.float32,
+        ).copy().reshape(
+            response.bin_count,
+            response.vertical_layers,
+        )
+
+        points = np.frombuffer(
+            response.point_data,
+            dtype=np.float32,
+        ).copy().reshape(
+            response.bin_count,
+            response.vertical_layers,
+            3,
+        )
+
+        valid = (
+            np.isfinite(ranges)
+            & (ranges > 0.15)
+            & (ranges <= 2.0)
+        )
+
+        detected_ranges = ranges[valid]
+        detected_points = points[valid]
+
+        if len(detected_points) == 0:
+            return None
+
+        height_mask = (
+            detected_points[:, 2]
+            > float(min_height_m)
+        )
+
+        detected_ranges = detected_ranges[height_mask]
+        detected_points = detected_points[height_mask]
+
+        if len(detected_points) == 0:
+            return None
+
+        pose = self.get_robot_pose()
+
+        c = math.cos(pose.yaw_rad)
+        s = math.sin(pose.yaw_rad)
+
+        best = None
+
+        for distance, point in zip(
+            detected_ranges,
+            detected_points,
+        ):
+            # Safety-stop only for a return that is genuinely
+            # physically close according to the LiDAR itself.
+            # This rejects geometry/self returns whose transformed
+            # robot-relative position appears close even though
+            # their actual sensor range is much farther away.
+            if float(distance) > 0.30:
+                continue
+
+            world_x = float(point[0])
+            world_y = float(point[1])
+
+            dx = world_x - pose.x_m
+            dy = world_y - pose.y_m
+
+            relative_x = c * dx + s * dy
+            relative_y = -s * dx + c * dy
+
+            # Ignore points behind/inside the robot.
+            # Ignore near-origin/self returns from the Go2.
+            if relative_x <= 0.10:
+                continue
+
+            # Ignore anything farther than the emergency zone.
+            if relative_x >= max_forward_m:
+                continue
+
+            # Ignore walls/objects beside the robot.
+            if abs(relative_y) >= half_width_m:
+                continue
+
+            candidate = {
+                "distance_m": float(distance),
+                "relative_x_m": relative_x,
+                "relative_y_m": relative_y,
+                "world_x_m": world_x,
+                "world_y_m": world_y,
+                "world_z_m": float(point[2]),
+            }
+
+            if (
+                best is None
+                or relative_x
+                < best["relative_x_m"]
+            ):
+                best = candidate
+
+        return best
+
 
     def get_lidar_clearances(
         self,
