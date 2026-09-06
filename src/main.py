@@ -1,102 +1,65 @@
-import traceback
+import time
+import json
+from src.navigation.command_validator import validate_agent_command
+from src.control.safety_supervisor import SafetySupervisor
+from src.navigation.route_evaluator import RouteEvaluator
+from src.control.adapters.sim_adapter import SimAdapter
 
-from llm_agent_destination import build_resolver
-from agent import (
-    handle_destination_decision,
-    decide_next_action,
-    request_initial_route,
-    create_next_waypoint_command,
-    handle_navigation_feedback,
-)
-from control.safety_supervisor import SafetySupervisor
-from navigation.route_evaluator import RouteEvaluator
-from control.adapters.sim_adapter import SimAdapter
-from navigation.route_planner import LOCATIONS
-
-def run_hospital_robot():
-    print("========================================")
-    print(" FENGSHUI-MATTERS: FULL SYSTEM ONLINE")
-    print("========================================\n")
+def run_navigation_loop():
+    print("=== STARTING NAVIGATION PIPELINE ===")
     
-    print("[Boot] Initializing LLM Resolver (Groq)...")
-    resolver = build_resolver()
-    
-    print("[Boot] Initializing Navigation & Simulator...")
+    # 1. Initialize your components
     adapter = SimAdapter(mode="fake")
     safety_gate = SafetySupervisor()
     evaluator = RouteEvaluator()
     
-    print("\n========================================")
-    print("Robot is ready in the lobby.")
-    user_input = input("Visitor instruction: ")
-    print("========================================\n")
+    # 2. Mock a raw JSON request exactly as the Agent Lead should send it
+    raw_agent_command = {
+        "schema_version": "1.0",
+        "run_id": "run-001",
+        "command_id": "cmd-001",
+        "destination": "radiology",
+        "route_id": "route-001",
+        "waypoint_id": "wp_reception_exit",
+        "waypoint_index": 0,
+        "total_waypoints": 3,
+        "action": "MOVE_TO_WAYPOINT",
+        "max_duration_s": 1.0,
+        "confidence": 0.95,
+        "announcement": "Proceeding"
+    }
     
-    # 1. LLM understands intent
-    print(f"[Agent A] Analyzing: '{user_input}'")
-    decision = resolver.resolve_destination(user_input)
-    print(f"[Agent A] Output: Intent={decision.intent.name}, Destination={decision.destination}")
-    
-    if decision.intent.name != "NAVIGATE":
-        print(f"[Robot says]: {decision.visitor_message}")
+    print("\n[Step 1] Validating raw agent command...")
+    is_valid, command_or_error = validate_agent_command(raw_agent_command)
+    if not is_valid:
+        print("Validation Failed:", command_or_error)
         return
-        
-    # 2. Start Agent B state machine
-    state = handle_destination_decision(decision)
+    agent_cmd = command_or_error
+    print("-> Validation Passed! Converted to Pydantic AgentNavigationCommand.")
     
-    # 3. The Master Loop
-    while True:
-        action = decide_next_action(state)
-        
-        if action == "NAVIGATE_TO_DESTINATION":
-            print(f"\n[Agent B] Requesting route to {state.destination}...")
-            state = request_initial_route(state, "lobby")
-            print(f"[Agent B] Route planned: {state.current_route}")
-            
-        elif action == "SEND_NEXT_WAYPOINT":
-            is_valid, agent_cmd = create_next_waypoint_command(state)
-            if not is_valid:
-                print(f"[Validator] ERROR: {agent_cmd}")
-                break
-                
-            print(f"\n[Navigation] Targeting waypoint: {agent_cmd.waypoint_id}")
-            
-            # Fetch observation and check safety
-            obs = adapter.get_observation()
-            robot_cmd = safety_gate.evaluate_command(agent_cmd, obs)
-            
-            # Send safe command to motors
-            adapter.send_command(robot_cmd)
-            
-            # --- MOCK PHYSICS FOR MVP HACKATHON ---
-            # Because our prototype fake physics doesn't steer, we just teleport 
-            # the fake robot to the waypoint to prove the software pipeline works.
-            target_wp = LOCATIONS[agent_cmd.waypoint_id]
-            adapter._fake_x_m = target_wp.x_m
-            adapter._fake_y_m = target_wp.y_m
-            
-            # Check progress
-            updated_obs = adapter.get_observation()
-            updated_obs.distance_to_target_m = 0.1 # Successfully arrived!
-            updated_obs.current_waypoint = agent_cmd.waypoint_id
-            
-            was_stopped = (robot_cmd.action == "STOP")
-            feedback = evaluator.evaluate_progress(agent_cmd, updated_obs, was_stopped_by_safety=was_stopped)
-            
-            print(f"[Evaluator] Status: {feedback.status}")
-            state = handle_navigation_feedback(state, feedback)
-            
-        elif action == "ARRIVED":
-            print("\n========================================")
-            print("[Robot says]: We have arrived at your destination! Have a great day.")
-            print("========================================")
-            break
-            
-        else:
-            print(f"\n[Agent B] Halting due to status: {action}")
-            break
+    print("\n[Step 2] Fetching initial observation from simulator...")
+    obs = adapter.get_observation()
+    
+    print("\n[Step 3] Applying deterministic safety gate...")
+    robot_cmd = safety_gate.evaluate_command(agent_cmd, obs)
+    
+    print(f"\n[Step 4] Sending low-level safe command to simulator: {robot_cmd.action} (vx={robot_cmd.vx_mps}m/s)")
+    adapter.send_command(robot_cmd)
+    
+    print("\n[Step 5] Fetching updated observation...")
+    obs = adapter.get_observation()
+    # Mock the simulator physically moving closer to the waypoint
+    obs.distance_to_target_m = 0.4 
+    
+    print("\n[Step 6] Evaluating progress against target...")
+    was_stopped = (robot_cmd.action == "STOP")
+    feedback = evaluator.evaluate_progress(agent_cmd, obs, was_stopped_by_safety=was_stopped)
+    
+    print("\n[Step 7] Final Feedback to return to Agent Architecture Lead:")
+    # Pretty print the final JSON feedback
+    print(feedback.model_dump_json(indent=2))
+    
+    print("\n=== NAVIGATION PIPELINE SUCCESS ===")
 
 if __name__ == "__main__":
-    try:
-        run_hospital_robot()
-    except Exception as e:
-        traceback.print_exc()
+    run_navigation_loop()
