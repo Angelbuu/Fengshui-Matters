@@ -51,7 +51,7 @@ class OrcaSimulation:
         orcagym_address: str | None = None,
         edit_address: str | None = None,
         lidar_entity: str = "LiDAR",
-        robot_body: str = "quadruped_robot_1_base_link",
+        robot_body: str = "go2_000_base_link",
         camera_entity: str = "mujococamera1080",
         camera_wsl_dir: str | None = None,
     ) -> None:
@@ -80,6 +80,9 @@ class OrcaSimulation:
         self._backend = None
         self._renderer = None
         self._last_physics_state = None
+
+        # Current production navigation uses LiDAR only.
+        self.camera_enabled = False
 
     def connect(self) -> None:
         """Connect to OrcaLab's gRPC service.
@@ -223,6 +226,150 @@ class OrcaSimulation:
         self._state.obstacles = [obstacle]
         return [obstacle]
 
+    def get_lidar_clearances(
+        self,
+        *,
+        max_distance_m: float = 5.0,
+        min_height_m: float = 0.15,
+    ) -> dict[str, float]:
+        """Return directional obstacle clearances in the robot frame.
+
+        Sectors:
+        front, front_left, front_right, left, right.
+
+        Values are distances in metres. A sector with no detected
+        obstacle returns max_distance_m.
+        """
+        import math
+
+        self.connect()
+
+        np = self._np
+        pb2 = self._mjc_message_pb2
+
+        assert np is not None
+        assert pb2 is not None
+        assert self._stub is not None
+
+        response = self._stub.QueryLiDARPointCloud(
+            pb2.LiDARPointCloudRequest(
+                entity_name=self.lidar_entity
+            ),
+            timeout=2.0,
+        )
+
+        result = {
+            "front": float(max_distance_m),
+            "front_left": float(max_distance_m),
+            "front_right": float(max_distance_m),
+            "left": float(max_distance_m),
+            "right": float(max_distance_m),
+        }
+
+        if response.status != pb2.LiDARPointCloudResponse.SUCCESS:
+            return result
+
+        ranges = np.frombuffer(
+            response.range_data,
+            dtype=np.float32,
+        ).copy().reshape(
+            response.bin_count,
+            response.vertical_layers,
+        )
+
+        points = np.frombuffer(
+            response.point_data,
+            dtype=np.float32,
+        ).copy().reshape(
+            response.bin_count,
+            response.vertical_layers,
+            3,
+        )
+
+        valid = (
+            np.isfinite(ranges)
+            & (ranges > 0.15)
+            & (ranges <= float(max_distance_m))
+        )
+
+        detected_ranges = ranges[valid]
+        detected_points = points[valid]
+
+        if len(detected_points) == 0:
+            return result
+
+        height_mask = (
+            detected_points[:, 2] > float(min_height_m)
+        )
+
+        detected_ranges = detected_ranges[height_mask]
+        detected_points = detected_points[height_mask]
+
+        if len(detected_points) == 0:
+            return result
+
+        pose = self.get_robot_pose()
+
+        c = math.cos(pose.yaw_rad)
+        s = math.sin(pose.yaw_rad)
+
+        for distance, point in zip(
+            detected_ranges,
+            detected_points,
+        ):
+            dx = float(point[0]) - pose.x_m
+            dy = float(point[1]) - pose.y_m
+
+            # World -> robot coordinates.
+            relative_x = c * dx + s * dy
+            relative_y = -s * dx + c * dy
+
+            angle = math.degrees(
+                math.atan2(relative_y, relative_x)
+            )
+
+            d = float(distance)
+
+            # Collision corridor directly ahead.
+            # Use robot-relative lateral distance so obstacles
+            # that overlap the physical width of the Go2 count
+            # as front obstacles.
+            if (
+                relative_x > 0.0
+                and abs(relative_y) <= 0.45
+            ):
+                result["front"] = min(
+                    result["front"],
+                    relative_x,
+                )
+
+            # Directional sectors for choosing the clearer side.
+            if 10.0 < angle <= 55.0:
+                result["front_left"] = min(
+                    result["front_left"],
+                    d,
+                )
+
+            elif -55.0 <= angle < -10.0:
+                result["front_right"] = min(
+                    result["front_right"],
+                    d,
+                )
+
+            elif 55.0 < angle <= 120.0:
+                result["left"] = min(
+                    result["left"],
+                    d,
+                )
+
+            elif -120.0 <= angle < -55.0:
+                result["right"] = min(
+                    result["right"],
+                    d,
+                )
+
+        return result
+
     def _ensure_locomotion(self) -> None:
         """Start one persistent CPU Go2 policy and bind it to the authored scene."""
         if self._backend is not None and self._renderer is not None:
@@ -261,11 +408,18 @@ class OrcaSimulation:
                 num_envs=1,
                 joint_qpos_addr=backend.joint_qpos_addr,
 
-                # Reuse the robot already authored in OrcaLab.
-                agent_name=None,
-                discover_agents=True,
-                publish=False,
-                anchor_to_scene=True,
+                # Publish the real runtime Go2 while preserving
+                # the authored hospital environment.
+                agent_name="go2_000",
+                discover_agents=False,
+                publish=True,
+                preserve_scene=True,
+
+                # Keep the runtime robot in the same ORCA world
+                # coordinate system used by our destinations.
+                spawn_center=(-0.710, -0.735, 0.0),
+                spawn_height=0.30,
+                anchor_to_scene=False,
 
                 scene_profile="orca-train",
                 strict_scene_options=True,
@@ -274,8 +428,9 @@ class OrcaSimulation:
                     Path("outputs/orca/scene_alignment/aligned_scene.xml")
                 ),
 
-                # Let the same bridge own robot + camera synchronization.
-                bind_camera=True,
+                # LiDAR-only navigation test. Re-enable RGB after
+                # runtime locomotion is fully integrated.
+                bind_camera=False,
                 edit_address=self.edit_address,
                 camera_actor_name=self.camera_entity,
                 camera_asset_path="prefabs/mujococamera1080",
@@ -392,8 +547,13 @@ class OrcaSimulation:
             backend.set_velocity_command(0.0, 0.0, 0.0)
 
     def get_robot_pose(self) -> Pose:
-        """Return the authoritative robot pose in OrcaLab world coordinates."""
+        """Return the authoritative runtime Go2 pose in OrcaLab coordinates."""
         import math
+
+        # go2_000 is created by the locomotion renderer, so ensure the
+        # runtime robot exists before attempting to read its pose.
+        if self._backend is None or self._renderer is None:
+            self._ensure_locomotion()
 
         # Once locomotion is active, MJLab is the authoritative physics state.
         # Use the renderer's scene mapping so the local MJLab pose is expressed

@@ -1,4 +1,4 @@
-from navigation.schemas import AgentNavigationCommand, SimulatorObservation, NavigationFeedback
+from src.navigation.schemas import AgentNavigationCommand, SimulatorObservation, NavigationFeedback
 
 # If the robot is within 0.5 meters of the target, we consider it "arrived" at the waypoint.
 WAYPOINT_REACHED_THRESHOLD_M = 0.5 

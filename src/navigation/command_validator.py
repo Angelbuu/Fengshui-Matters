@@ -1,6 +1,6 @@
 from typing import Dict, Any, Tuple
 from pydantic import ValidationError
-from navigation.schemas import AgentNavigationCommand
+from src.navigation.schemas import AgentNavigationCommand
 
 def validate_agent_command(raw_data: Dict[str, Any]) -> Tuple[bool, AgentNavigationCommand | str]:
     """

@@ -3,8 +3,8 @@
 import time
 import math
 
-from control.adapters.base_adapter import BaseAdapter
-from navigation.schemas import (
+from src.control.adapters.base_adapter import BaseAdapter
+from src.navigation.schemas import (
     Pose,
     RobotCommand,
     SimulatorObservation,
@@ -143,7 +143,11 @@ class SimAdapter(BaseAdapter):
         # Refresh all simulator-side observations.
         pose = self._orca.get_robot_pose()
         obstacles = self._orca.get_lidar_obstacles()
-        camera_frame = self._orca.get_camera_frame()
+        # RGB is optional. Current Orca navigation is LiDAR-only.
+        if getattr(self._orca, "camera_enabled", False):
+            camera_frame = self._orca.get_camera_frame()
+        else:
+            camera_frame = None
 
         state = self._orca.get_state()
 

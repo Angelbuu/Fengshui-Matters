@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from navigation.schemas import RobotCommand, SimulatorObservation
+from src.navigation.schemas import RobotCommand, SimulatorObservation
 
 class BaseAdapter(ABC):
     """

@@ -1,17 +1,17 @@
 import traceback
 
-from llm_agent_destination import build_resolver
-from agent import (
+from src.llm_agent_destination import build_resolver
+from src.agent import (
     handle_destination_decision,
     decide_next_action,
     request_initial_route,
     create_next_waypoint_command,
     handle_navigation_feedback,
 )
-from control.safety_supervisor import SafetySupervisor
-from navigation.route_evaluator import RouteEvaluator
-from control.adapters.sim_adapter import SimAdapter
-from navigation.route_planner import LOCATIONS
+from src.control.safety_supervisor import SafetySupervisor
+from src.navigation.route_evaluator import RouteEvaluator
+from src.control.adapters.sim_adapter import SimAdapter
+from src.navigation.route_planner import LOCATIONS
 
 def run_hospital_robot():
     print("========================================")
