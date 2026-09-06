@@ -38,6 +38,7 @@ class SimAdapter(BaseAdapter):
         self._fake_wz_rps = 0.0
 
         self._fake_sim_time_s = 0.0
+        self._fake_obstacles = []
 
         if mode == "orca":
             # Lazy import keeps normal tests independent of OrcaLab/NaVILA.
@@ -134,7 +135,7 @@ class SimAdapter(BaseAdapter):
                 ),
 
                 heading_error_rad=0.0,
-                obstacles=[],
+                obstacles=self._fake_obstacles,
             )
 
         assert self._orca is not None
@@ -167,3 +168,17 @@ class SimAdapter(BaseAdapter):
         if self._orca is not None:
             self._orca.close()
             self._orca = None
+            
+    def set_fake_obstacles(self, obstacles) -> None:
+        """
+        Inject fake LiDAR obstacles for local navigation tests.
+
+        Only used when mode='fake'.
+        """
+
+        if self.mode != "fake":
+            raise RuntimeError(
+                "Fake obstacles can only be used in fake mode."
+            )
+
+        self._fake_obstacles = obstacles
