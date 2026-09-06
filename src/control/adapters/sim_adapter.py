@@ -1,9 +1,10 @@
 """Simulation adapter for fake tests and the real OrcaLab backend."""
 
 import time
+import math
 
-from src.control.adapters.base_adapter import BaseAdapter
-from src.navigation.schemas import (
+from control.adapters.base_adapter import BaseAdapter
+from navigation.schemas import (
     Pose,
     RobotCommand,
     SimulatorObservation,
@@ -27,6 +28,16 @@ class SimAdapter(BaseAdapter):
         self.mode = mode
         self.last_command_received = None
         self._orca = None
+         # Lightweight robot state used only in fake mode.
+        self._fake_x_m = 0.0
+        self._fake_y_m = 0.0
+        self._fake_yaw_rad = 0.0
+
+        self._fake_vx_mps = 0.0
+        self._fake_vy_mps = 0.0
+        self._fake_wz_rps = 0.0
+
+        self._fake_sim_time_s = 0.0
 
         if mode == "orca":
             # Lazy import keeps normal tests independent of OrcaLab/NaVILA.
@@ -38,10 +49,59 @@ class SimAdapter(BaseAdapter):
         self.last_command_received = command
 
         if self.mode == "fake":
-            print(
-                f"[SimAdapter] Sent command to simulator: "
-                f"{command.action} for {command.duration_s} seconds"
+
+            duration = command.duration_s
+
+            # Save commanded velocity for the next observation.
+            self._fake_vx_mps = command.vx_mps
+            self._fake_vy_mps = command.vy_mps
+            self._fake_wz_rps = command.wz_rps
+
+            # ----------------------------------------
+            # Update orientation
+            # ----------------------------------------
+
+            self._fake_yaw_rad += (
+                command.wz_rps * duration
             )
+
+            # Keep yaw inside [-pi, pi].
+            self._fake_yaw_rad = (
+                self._fake_yaw_rad + math.pi
+            ) % (2 * math.pi) - math.pi
+
+            # ----------------------------------------
+            # Update position
+            # ----------------------------------------
+            #
+            # vx / vy are robot-local velocities.
+            # Convert them into world coordinates.
+            # ----------------------------------------
+
+            cos_yaw = math.cos(self._fake_yaw_rad)
+            sin_yaw = math.sin(self._fake_yaw_rad)
+
+            world_vx = (
+                command.vx_mps * cos_yaw
+                - command.vy_mps * sin_yaw
+            )
+
+            world_vy = (
+                command.vx_mps * sin_yaw
+                + command.vy_mps * cos_yaw
+            )
+
+            self._fake_x_m += world_vx * duration
+            self._fake_y_m += world_vy * duration
+
+            self._fake_sim_time_s += duration
+
+            print(
+                f"[SimAdapter] Sent command: "
+                f"{command.action} "
+                f"for {duration:.2f}s"
+            )
+
             return True
 
         assert self._orca is not None
@@ -49,22 +109,30 @@ class SimAdapter(BaseAdapter):
 
     def get_observation(self) -> SimulatorObservation:
         if self.mode == "fake":
+
             return SimulatorObservation(
                 run_id="fake_run",
-                command_id="fake_cmd",
+                command_id=(
+                    self.last_command_received.command_id
+                    if self.last_command_received
+                    else "fake_cmd"
+                ),
                 timestamp_ms=int(time.time() * 1000),
-                sim_time_s=0.0,
+                sim_time_s=self._fake_sim_time_s,
                 robot_status="RUNNING",
+
                 pose=Pose(
-                    x_m=0.0,
-                    y_m=0.0,
-                    yaw_rad=0.0,
+                    x_m=self._fake_x_m,
+                    y_m=self._fake_y_m,
+                    yaw_rad=self._fake_yaw_rad,
                 ),
+
                 velocity=Velocity(
-                    vx_mps=0.0,
-                    vy_mps=0.0,
-                    wz_rps=0.0,
+                    vx_mps=self._fake_vx_mps,
+                    vy_mps=self._fake_vy_mps,
+                    wz_rps=self._fake_wz_rps,
                 ),
+
                 heading_error_rad=0.0,
                 obstacles=[],
             )
