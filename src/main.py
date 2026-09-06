@@ -14,16 +14,28 @@ def run_hospital_robot():
     user_input = input("Visitor instruction: ")
     
     try:
-        # LangGraph takes over the entire execution
-        result = graph.invoke({
-            "user_text": user_input,
-            "adapter": adapter,
-        })
-        
-        print("\n========================================")
-        print(f"[Robot says]: {result['final_message']}")
-        print("========================================")
-        
+        clarification_rounds = 0
+        while True:
+            # LangGraph takes over the execution
+            result = graph.invoke({
+                "user_text": user_input,
+                "adapter": adapter,
+            })
+            
+            print("\n========================================")
+            print(f"[Robot says]: {result['final_message']}")
+            print("========================================")
+            
+            agent_status = result["agent_state"].status
+            if agent_status == "WAITING_FOR_CLARIFICATION":
+                clarification_rounds += 1
+                if clarification_rounds >= 5:
+                    print("\n[Robot says]: (System) Maximum clarification rounds reached. Resetting.")
+                    break
+                user_input = input("\nVisitor response: ")
+            else:
+                break
+                
     finally:
         adapter.close()
 
