@@ -1,4 +1,4 @@
-# Fengshui Matters Agent
+# Fengshui-Matters: Autonomous Hospital Navigation System
 
 Welcome to the Fengshui-Matters project repository, our official submission for the Agentic AI Hackathon 2026!
 
