@@ -36,9 +36,25 @@ def run_hospital_robot():
     decision = resolver.resolve_destination(user_input)
     print(f"[Agent A] Output: Intent={decision.intent.name}, Destination={decision.destination}")
     
-    if decision.intent.name != "NAVIGATE":
-        print(f"[Robot says]: {decision.visitor_message}")
-        return
+    clarification_rounds = 0
+    
+    while decision.intent.name != "NAVIGATE":
+        if clarification_rounds >= 5:
+            print("\n[Robot says]: (System) Maximum clarification rounds reached. Resetting.")
+            return
+            
+        print(f"\n[Robot says]: {decision.visitor_message}")
+        
+        if decision.intent.name == "UNKNOWN":
+            print("Ending conversation.")
+            return
+            
+        user_input = input("\nVisitor response: ")
+        print(f"\n[Agent A] Analyzing: '{user_input}'")
+        decision = resolver.resolve_destination(user_input)
+        print(f"[Agent A] Output: Intent={decision.intent.name}, Destination={decision.destination}")
+        
+        clarification_rounds += 1
         
     # 2. Start Agent B state machine
     state = handle_destination_decision(decision)
