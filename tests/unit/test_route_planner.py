@@ -1,5 +1,4 @@
-from route_planner import plan_route, replan_route
-
+from src.navigation.route_planner import plan_route, replan_route
 
 def test_normal_route_to_radiology():
 
