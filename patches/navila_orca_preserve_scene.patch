@@ -1,0 +1,78 @@
+diff --git a/NaVILA-Orca/src/navila_orca/orcalab_runtime/batch_render.py b/NaVILA-Orca/src/navila_orca/orcalab_runtime/batch_render.py
+index 209ba5d..19a2d2c 100644
+--- a/NaVILA-Orca/src/navila_orca/orcalab_runtime/batch_render.py
++++ b/NaVILA-Orca/src/navila_orca/orcalab_runtime/batch_render.py
+@@ -310,6 +310,7 @@ class OrcaLabBatchRenderer:
+         aligned_xml_output: str | Path | None = None,
+         spawn_height: float = 0.0,
+         publish: bool = True,
++        preserve_scene: bool = False,
+         load_timeout_s: float = 600.0,
+     ):
+         """``joint_qpos_addr``: local-model qpos address per named (hinge) joint,
+@@ -334,6 +335,7 @@ class OrcaLabBatchRenderer:
+             ]
+         if publish and self.discover_agents:
+             raise ValueError("discover_agents is only valid when publish=False")
++        self.preserve_scene = bool(preserve_scene)
+         self.asset_path = asset_path
+         self.terrain_asset_path = terrain_asset_path
+         self.terrain_position = resolve_terrain_position(
+@@ -459,14 +461,16 @@ class OrcaLabBatchRenderer:
+         from orca_gym.scene.orca_gym_scene import Actor, OrcaGymScene
+         from orca_gym.utils.rotations import euler2quat
+ 
+-        # Publish an empty scene first to clear any previous batch.
+-        scene = OrcaGymScene(self.orcagym_addr)
+-        try:
+-            scene.publish_scene()
++        # Normally NaVILA clears the previous batch before publishing.
++        # preserve_scene=True keeps the authored OrcaLab hospital intact.
++        if not self.preserve_scene:
++            scene = OrcaGymScene(self.orcagym_addr)
++            try:
++                scene.publish_scene()
++                time.sleep(1.0)
++            finally:
++                scene.close()
+             time.sleep(1.0)
+-        finally:
+-            scene.close()
+-        time.sleep(1.0)
+ 
+         scene = OrcaGymScene(self.orcagym_addr)
+         try:
+diff --git a/NaVILA-Orca/src/navila_orca/render/orca.py b/NaVILA-Orca/src/navila_orca/render/orca.py
+index 7d3e55e..6dc790d 100644
+--- a/NaVILA-Orca/src/navila_orca/render/orca.py
++++ b/NaVILA-Orca/src/navila_orca/render/orca.py
+@@ -66,6 +66,9 @@ class OrcaLabRenderBridge:
+         asset_path: str = DEFAULT_GO2_ASSET,
+         terrain_asset_path: str | None = None,
+         publish: bool = True,
++        preserve_scene: bool = False,
++        spawn_center: tuple[float, float, float] | list[float] | None = None,
++        spawn_height: float = 0.0,
+         anchor_to_scene: bool = False,
+         scene_timestep: float | None = None,
+         scene_profile: str = "orca-runtime",
+@@ -105,6 +108,9 @@ class OrcaLabRenderBridge:
+         self.asset_path = asset_path
+         self.terrain_asset_path = terrain_asset_path
+         self.publish = bool(publish)
++        self.preserve_scene = bool(preserve_scene)
++        self.spawn_center = spawn_center
++        self.spawn_height = float(spawn_height)
+         self.anchor_to_scene = bool(anchor_to_scene)
+         self.scene_timestep = None if scene_timestep is None else float(scene_timestep)
+         self.scene_profile = str(scene_profile)
+@@ -186,6 +192,9 @@ class OrcaLabRenderBridge:
+                 asset_path=self.asset_path,
+                 terrain_asset_path=self.terrain_asset_path,
+                 publish=self.publish,
++                preserve_scene=self.preserve_scene,
++                spawn_center=self.spawn_center,
++                spawn_height=self.spawn_height,
+                 anchor_to_scene=self.anchor_to_scene,
+                 scene_timestep=self.scene_timestep,
+                 scene_profile=self.scene_profile,
