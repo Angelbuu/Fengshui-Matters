@@ -8,7 +8,7 @@ from llm_agent_destination import (
 from agent_state import AgentState
 from navigation.command_validator import validate_agent_command
 from navigation.schemas import NavigationFeedback
-from route_planner import RoutePlan, plan_route, replan_route
+from navigation.route_planner import RoutePlan, plan_route, replan_route
 
 def handle_destination_decision(
     decision: DestinationDecision,
