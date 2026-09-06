@@ -12,8 +12,11 @@ Our solution leverages Agentic AI to power an autonomous hospital navigation sys
 
 ## Tech Stack
 * **Language**: Python 3
-* **AI/Orchestration**: LangGraph & LangChain
-* **LLMs**: AWS Bedrock & Groq
+* **AI/Orchestration**: LangChain (via `langchain_groq`) & Custom State Machine
+* **LLMs**: Groq
+* **Data Validation**: Pydantic
+* **Simulation**: ORCA Simulation Engine & MuJoCo
+* **Testing & Evaluation**: Pytest
 
 ---
 
