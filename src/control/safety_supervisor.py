@@ -1,5 +1,5 @@
 import time
-from src.navigation.schemas import AgentNavigationCommand, RobotCommand, SimulatorObservation
+from navigation.schemas import AgentNavigationCommand, RobotCommand, SimulatorObservation
 
 # Hardcoded safety rules for our prototype (from the Integration Spec)
 MAX_ACTION_DURATION_S = 1.0
