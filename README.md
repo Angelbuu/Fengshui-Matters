@@ -1,6 +1,6 @@
-# Fengshui-Matters: Autonomous Hospital Navigation System
+# Fengshui Matters Agent
 
-Welcome to the Fengshui-Matters project repository, our official submission for the Agentic AI Hackathon 2026!
+A vision-language-action agent built for the 2026 Agentic AI Hackathon. 
 
 Our solution leverages Agentic AI to power an autonomous hospital navigation system. By parsing raw human language into semantic intents, our agents plan optimal routes and autonomously drive a simulated robot to its destination, adapting to physical constraints safely.
 
@@ -36,6 +36,12 @@ pip install -r requirements.txt
 Copy the example environment file and fill in your API keys (e.g., Groq API key, AWS profiles):
 ```bash
 cp .env.example .env
+```
+
+**4. Path Variables:**
+When running the scripts, you must set the `PYTHONPATH` to the `src` directory so the internal module imports resolve correctly:
+```bash
+export PYTHONPATH=src
 ```
 
 ## How to Run
@@ -76,3 +82,4 @@ In alignment with the hackathon's core criteria, our Agentic AI demonstrates the
 1. **Planning:** The AI translates vague requests (like "I feel sick") into a concrete goal, maps the hospital layout, and formulates a multi-step waypoint route.
 2. **Acting:** The agent decomposes the high-level plan into explicit, physical skill calls (`MOVE`), bridging the digital-to-physical gap.
 3. **Adapting:** By running a continuous closed-loop evaluation against the `SimulatorObservation`, the system reacts to blocked paths and safety interventions dynamically, demonstrating robust error recovery.
+4. **Multilingual Inclusivity & Safety Bounding:** The LLM natively processes non-English instructions (e.g., Mandarin) and automatically replies in the user's spoken language. Furthermore, the Agent enforces a strict 5-round limit on clarification loops to prevent infinite state-machine trapping, ensuring a highly robust and user-friendly experience.
