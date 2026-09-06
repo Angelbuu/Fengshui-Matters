@@ -1,38 +1,59 @@
 import uuid
-from typing import Any, Dict
+from llm_agent_destination import (
+    DestinationDecision,
+    Intent,
+    build_resolver,
+)
 
 from agent_state import AgentState
 from navigation.command_validator import validate_agent_command
 from navigation.schemas import NavigationFeedback
 from route_planner import RoutePlan, plan_route, replan_route
+from navigation.navigation_result import NavigationResult
+from navigation.navigator import navigate_to_destination
 
-def handle_destination_decision(decision: Dict[str, Any]) -> AgentState:
+def handle_destination_decision(
+    decision: DestinationDecision,
+) -> AgentState:
     """
-    Convert B1's destination decision into the initial B2 agent state.
+    Convert B1's destination decision into
+    the initial B2 agent state.
     """
 
     run_id = str(uuid.uuid4())
 
-    intent = decision.get("intent")
-    
-    if intent == "NAVIGATE":
+    # ----------------------------------------
+    # NAVIGATE
+    # ----------------------------------------
+
+    if decision.intent == Intent.NAVIGATE:
+
         return AgentState(
             run_id=run_id,
-            destination=decision.get("destination"),
-            destination_type=decision.get("destination_type"),
-            ward_number=decision.get("ward_number"),
-            confidence=decision.get("confidence", 0.0),
+            destination=decision.destination,
+            confidence=decision.confidence,
             status="READY_TO_NAVIGATE",
         )
-        
-    if intent == "CLARIFY":
+
+    # ----------------------------------------
+    # CLARIFY
+    # ----------------------------------------
+
+    if decision.intent == Intent.CLARIFY:
+
         return AgentState(
             run_id=run_id,
+            confidence=decision.confidence,
             status="WAITING_FOR_CLARIFICATION",
         )
-        
+
+    # ----------------------------------------
+    # UNKNOWN
+    # ----------------------------------------
+
     return AgentState(
         run_id=run_id,
+        confidence=decision.confidence,
         status="UNKNOWN_DESTINATION",
     )
     
@@ -146,7 +167,7 @@ def decide_next_action(state: AgentState) -> str:
         return "REQUEST_HUMAN_ASSISTANCE"
 
     if state.status == "READY_TO_NAVIGATE":
-        return "REQUEST_ROUTE"
+        return "NAVIGATE_TO_DESTINATION"
 
     if state.status == "READY_FOR_NEXT_WAYPOINT":
         return "SEND_NEXT_WAYPOINT"
@@ -292,3 +313,159 @@ def request_replan(
 
     return assign_route(state, route)
 
+def handle_navigation_result(
+    state: AgentState,
+    result: NavigationResult,
+) -> AgentState:
+    """
+    Update the high-level agent state after a navigation task finishes.
+    """
+
+    if result.status == "ARRIVED":
+        state.status = "ARRIVED"
+        state.human_assistance_required = False
+        state.replan_required = False
+        return state
+
+    if result.status == "HUMAN_ASSISTANCE_REQUIRED":
+        state.status = "NEEDS_HUMAN_ASSISTANCE"
+        state.human_assistance_required = True
+        return state
+
+    if result.status == "MAX_STEPS_EXCEEDED":
+        state.status = "NAVIGATION_FAILED"
+        return state
+
+    if result.status == "FAILED":
+        state.status = "NAVIGATION_FAILED"
+        return state
+
+    state.status = "ERROR"
+    return state
+
+def execute_navigation(
+    state: AgentState,
+    adapter,
+) -> AgentState:
+    """
+    Execute the agent's current navigation goal using
+    the closed-loop navigation system.
+    """
+
+    if state.destination is None:
+        state.status = "ERROR"
+        return state
+
+    state.status = "NAVIGATING"
+
+    result = navigate_to_destination(
+        adapter=adapter,
+        destination=state.destination,
+        max_steps=300,
+    )
+
+    return handle_navigation_result(
+        state,
+        result,
+    )
+    
+if __name__ == "__main__":
+
+    from control.adapters.sim_adapter import SimAdapter
+
+    # ========================================
+    # 1. REAL B1 LLM
+    # ========================================
+
+    resolver = build_resolver()
+
+    user_text = (
+        "I need to collect my medication."
+    )
+
+    print("\n--- VISITOR ---")
+    print(user_text)
+
+    decision = resolver.resolve_destination(
+        user_text
+    )
+
+    print("\n--- B1 LLM DECISION ---")
+    print("Intent:", decision.intent)
+    print("Destination:", decision.destination)
+    print("Confidence:", decision.confidence)
+    print(
+        "Needs clarification:",
+        decision.needs_clarification,
+    )
+    print(
+        "Visitor message:",
+        decision.visitor_message,
+    )
+
+    # ========================================
+    # 2. B1 -> B2
+    # ========================================
+
+    state = handle_destination_decision(
+        decision
+    )
+
+    print("\n--- B2 STATE ---")
+    print("Goal:", state.destination)
+    print("Status:", state.status)
+
+    # ========================================
+    # 3. B2 DECIDES
+    # ========================================
+
+    action = decide_next_action(state)
+
+    print("\n--- B2 DECISION ---")
+    print("Action:", action)
+
+    # ========================================
+    # 4. NAVIGATION
+    # ========================================
+
+    adapter = SimAdapter(mode="fake")
+
+    # Temporary fake LiDAR obstacle so that
+    # our full integration also exercises
+    # obstacle avoidance.
+    adapter.set_fake_obstacles([
+        {
+            "id": "fake_obstacle",
+            "distance_m": 0.40,
+            "relative_x_m": 0.40,
+            "relative_y_m": 0.0,
+            "world_x_m": 0.40,
+            "world_y_m": 0.0,
+            "world_z_m": 0.5,
+        }
+    ])
+
+    try:
+
+        if action == "NAVIGATE_TO_DESTINATION":
+
+            state = execute_navigation(
+                state,
+                adapter,
+            )
+
+    finally:
+
+        adapter.close()
+
+    # ========================================
+    # 5. FINAL B2 RESULT
+    # ========================================
+
+    print("\n--- FINAL B2 STATE ---")
+    print("Destination:", state.destination)
+    print("Status:", state.status)
+    print(
+        "Next action:",
+        decide_next_action(state),
+    )
